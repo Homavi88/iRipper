@@ -1,13 +1,16 @@
-Attribute VB_Name = "ExportRipperI"
 Option Explicit
 
 ' ============================================================
-' Экспорт уникальных строк F:M с листа "Ripper I" в архив на M:\
-' Привязка только к имени листа — имя файла источника не важно.
+' Экспорт уникальных строк F:M с листа "Ripper I" в архив.
+' Привязка только к имени листа - имя файла источника не важно.
+'
+' ВАЖНО: не оставляйте в модуле строку Attribute VB_Name = ...
+' Она нужна только при File > Import File, при вставке кода
+' даёт Compile error: Expected: line number or label...
 ' ============================================================
 
-' Путь к файлу-архиву на диске M (при необходимости измените имя файла)
-Private Const DEST_PATH As String = "M:\Ripper_I_PackedBatches.xlsx"
+' Путь к файлу-архиву (измените при необходимости)
+Private Const DEST_PATH As String = "C:\AUTO\iRipper\Ripper_I_PackedBatches.xlsx"
 
 ' Имя листа-источника (фиксировано; имя книги может меняться)
 Private Const SOURCE_SHEET_NAME As String = "Ripper I"
