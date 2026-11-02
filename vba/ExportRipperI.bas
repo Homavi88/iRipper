@@ -1,40 +1,30 @@
 Option Explicit
 
 ' ============================================================
-' Экспорт уникальных строк F:M с листа "Ripper I" в архив.
-' Привязка только к имени листа - имя файла источника не важно.
+' ExportRipperI - v3
+' Экспорт F:M с листа "Ripper I" в ОДИН общий архив.
+' Имя исходной книги не важно - архив только ДОПИСЫВАЕТСЯ.
 '
-' Архив ВСЕГДА один и тот же файл (DEST_PATH): макрос только
-' ДОПИСЫВАЕТ новые Batch Id, никогда не очищает и не
-' перезаписывает уже сохранённые строки.
-'
-' ВАЖНО: не оставляйте в модуле строку Attribute VB_Name = ...
-' Она нужна только при File > Import File, при вставке кода
-' даёт Compile error: Expected: line number or label...
+' Если в MsgBox нет строки Version: v3 - в Excel всё ещё старый код.
 ' ============================================================
 
-' Путь к файлу-архиву (фиксированный; не зависит от имени исходной книги)
+Private Const MACRO_VERSION As String = "v3-append-2026-11-02"
+
+' Фиксированный путь архива (не зависит от имени исходной книги)
 Private Const DEST_PATH As String = "C:\AUTO\iRipper\Ripper_I_PackedBatches.xlsx"
 
-' Имя листа-источника (фиксировано; имя книги может меняться)
 Private Const SOURCE_SHEET_NAME As String = "Ripper I"
-
-' Имя листа в файле-архиве
 Private Const DEST_SHEET_NAME As String = "Ripper I"
 
-' Диапазон F:M
 Private Const COL_FIRST As Long = 6   ' F - Packed batch
 Private Const COL_LAST As Long = 13   ' M - Ripper weight
-Private Const COL_PACKED As Long = 6  ' F - критерий "есть значение"
-Private Const COL_BATCH As Long = 10  ' J - Batch Id (уникальность)
+Private Const COL_PACKED As Long = 6
+Private Const COL_BATCH As Long = 10  ' J - Batch Id
 
-' В архиве колонки сдвигаются: F->A ... M->H, Batch Id оказывается в колонке E
+' В архиве: F->A ... J->E ... M->H
 Private Const DEST_BATCH_COL As Long = 5
-Private Const DEST_COL_COUNT As Long = 8 ' F:M = 8 колонок
+Private Const DEST_COL_COUNT As Long = 8
 
-' ------------------------------------------------------------
-' Точка входа: запустите этот макрос (Alt+F8)
-' ------------------------------------------------------------
 Public Sub ExportUniquePackedBatches()
     Dim srcWb As Workbook
     Dim srcWs As Worksheet
@@ -43,6 +33,7 @@ Public Sub ExportUniquePackedBatches()
     Dim existing As Object
     Dim lastSrcRow As Long
     Dim lastDestRow As Long
+    Dim rowsBefore As Long
     Dim r As Long
     Dim destRow As Long
     Dim batchKey As String
@@ -54,6 +45,7 @@ Public Sub ExportUniquePackedBatches()
     Dim weOpenedDest As Boolean
     Dim screenWasUpdating As Boolean
     Dim calcMode As XlCalculation
+    Dim writeCell As Range
 
     On Error GoTo CleanFail
 
@@ -65,35 +57,40 @@ Public Sub ExportUniquePackedBatches()
 
     weOpenedDest = False
     createdNew = False
+    Set destWb = Nothing
 
     Set srcWb = ThisWorkbook
     Set srcWs = FindSheetByName(srcWb, SOURCE_SHEET_NAME)
     If srcWs Is Nothing Then
-        MsgBox "Лист """ & SOURCE_SHEET_NAME & """ не найден в текущей книге.", _
+        MsgBox "Version: " & MACRO_VERSION & vbCrLf & _
+               "Лист """ & SOURCE_SHEET_NAME & """ не найден.", _
                vbExclamation, "Export Ripper I"
         GoTo CleanExit
     End If
 
-    lastSrcRow = LastUsedRowInColumns(srcWs, COL_FIRST, COL_LAST)
+    lastSrcRow = LastNonEmptyRow(srcWs, COL_FIRST, COL_LAST)
     If lastSrcRow < 2 Then
-        MsgBox "На листе """ & SOURCE_SHEET_NAME & """ нет данных для копирования.", _
+        MsgBox "Version: " & MACRO_VERSION & vbCrLf & _
+               "Нет данных на листе """ & SOURCE_SHEET_NAME & """.", _
                vbInformation, "Export Ripper I"
         GoTo CleanExit
     End If
 
-    ' Один и тот же архив независимо от имени исходной книги
-    Set destWb = OpenOrCreateArchive(DEST_PATH, createdNew, weOpenedDest)
+    Set destWb = OpenArchiveAppendOnly(DEST_PATH, createdNew, weOpenedDest)
     Set destWs = EnsureDestSheet(destWb, DEST_SHEET_NAME)
 
-    ' Никогда не очищаем лист: только дописываем после последней строки
-    lastDestRow = LastDataRow(destWs)
+    lastDestRow = LastNonEmptyRow(destWs, 1, DEST_COL_COUNT)
+    rowsBefore = lastDestRow
+
     If lastDestRow < 1 Then
         CopyHeaderAsValues srcWs, destWs
         lastDestRow = 1
+        rowsBefore = 1
     End If
 
     Set existing = BuildBatchIdMap(destWs, lastDestRow)
 
+    ' Пишем ТОЛЬКО ниже уже занятых строк - никогда поверх
     destRow = lastDestRow
     added = 0
     skippedEmpty = 0
@@ -110,33 +107,55 @@ Public Sub ExportUniquePackedBatches()
             ElseIf existing.Exists(batchKey) Then
                 skippedDup = skippedDup + 1
             Else
-                destRow = destRow + 1
-                ' Копируем только значения (формулы не переносятся)
+                destRow = NextEmptyArchiveRow(destWs, destRow)
+                If destRow <= rowsBefore And rowsBefore > 1 Then
+                    Err.Raise vbObjectError + 1, "ExportUniquePackedBatches", _
+                              "Защита: попытка записи в занятую строку " & destRow & _
+                              " (в архиве уже " & rowsBefore & " строк). Операция отменена."
+                End If
+
+                Set writeCell = destWs.Cells(destRow, 1)
+                ' Ещё раз: не затираем непустую строку
+                If Not IsBlankCell(writeCell.Value2) Or Not IsBlankCell(destWs.Cells(destRow, DEST_BATCH_COL).Value2) Then
+                    Err.Raise vbObjectError + 2, "ExportUniquePackedBatches", _
+                              "Защита: строка " & destRow & " в архиве не пустая. Операция отменена."
+                End If
+
                 destWs.Range(destWs.Cells(destRow, 1), destWs.Cells(destRow, DEST_COL_COUNT)).Value2 = _
                     srcWs.Range(srcWs.Cells(r, COL_FIRST), srcWs.Cells(r, COL_LAST)).Value2
+
                 existing.Add batchKey, True
                 added = added + 1
             End If
         End If
     Next r
 
-    ' Только Save - никогда SaveAs поверх существующего архива
+    ' Контроль: число строк не должно уменьшиться
+    If LastNonEmptyRow(destWs, 1, DEST_COL_COUNT) < rowsBefore Then
+        Err.Raise vbObjectError + 3, "ExportUniquePackedBatches", _
+                  "Защита: число строк в архиве уменьшилось. Сохранение отменено."
+    End If
+
     destWb.Save
 
-    MsgBox "Готово (дозапись в общий архив)." & vbCrLf & _
+    MsgBox "Version: " & MACRO_VERSION & vbCrLf & _
+           "Режим: только дозапись (без перезаписи)" & vbCrLf & _
            "Исходная книга: " & srcWb.Name & vbCrLf & _
-           "Добавлено строк: " & added & vbCrLf & _
-           "Пропущено (пустое Packed batch / Batch Id): " & skippedEmpty & vbCrLf & _
-           "Пропущено (уже есть Batch Id): " & skippedDup & vbCrLf & _
-           "Всего строк в архиве (с шапкой): " & destRow & vbCrLf & _
-           "Файл: " & destWb.FullName, _
+           "Строк в архиве до: " & rowsBefore & vbCrLf & _
+           "Добавлено: " & added & vbCrLf & _
+           "Пропущено (пусто): " & skippedEmpty & vbCrLf & _
+           "Пропущено (дубликат Batch Id): " & skippedDup & vbCrLf & _
+           "Строк в архиве после: " & LastNonEmptyRow(destWs, 1, DEST_COL_COUNT) & vbCrLf & _
+           "Архив: " & destWb.FullName, _
            vbInformation, "Export Ripper I"
 
 CleanExit:
     On Error Resume Next
     If weOpenedDest Then
         If Not destWb Is Nothing Then
-            If destWb.FullName <> srcWb.FullName Then destWb.Close SaveChanges:=False
+            If Not srcWb Is Nothing Then
+                If destWb.FullName <> srcWb.FullName Then destWb.Close SaveChanges:=False
+            End If
         End If
     End If
     On Error GoTo 0
@@ -146,102 +165,115 @@ CleanExit:
     Exit Sub
 
 CleanFail:
+    Dim errNum As Long
+    Dim errDesc As String
+    errNum = Err.Number
+    errDesc = Err.Description
     On Error Resume Next
     If weOpenedDest Then
         If Not destWb Is Nothing Then
-            If destWb.FullName <> srcWb.FullName Then destWb.Close SaveChanges:=False
+            If Not srcWb Is Nothing Then
+                If destWb.FullName <> srcWb.FullName Then destWb.Close SaveChanges:=False
+            End If
         End If
     End If
     On Error GoTo 0
     Application.EnableEvents = True
     Application.Calculation = calcMode
     Application.ScreenUpdating = screenWasUpdating
-    MsgBox "Ошибка VBA " & Err.Number & ": " & Err.Description, vbCritical, "Export Ripper I"
+    MsgBox "Version: " & MACRO_VERSION & vbCrLf & _
+           "Ошибка VBA " & errNum & ": " & errDesc, vbCritical, "Export Ripper I"
 End Sub
 
-' ======================== Вспомогательные ========================
+' ======================== Архив: только open/append ========================
 
-Private Function FindSheetByName(wb As Workbook, sheetName As String) As Worksheet
-    Dim ws As Worksheet
-    For Each ws In wb.Worksheets
-        If StrComp(ws.Name, sheetName, vbTextCompare) = 0 Then
-            Set FindSheetByName = ws
-            Exit Function
-        End If
-    Next ws
-    Set FindSheetByName = Nothing
-End Function
-
-' Открывает существующий архив или создаёт новый.
-' НИКОГДА не перезаписывает уже существующий файл через SaveAs.
-Private Function OpenOrCreateArchive(ByVal path As String, _
-                                     ByRef createdNew As Boolean, _
-                                     ByRef weOpened As Boolean) As Workbook
+' 1) Уже открыт  2) Пробуем Open  3) Создаём ТОЛЬКО если файла нет
+' SaveAs поверх существующего файла - ЗАПРЕЩЁН
+Private Function OpenArchiveAppendOnly(ByVal path As String, _
+                                       ByRef createdNew As Boolean, _
+                                       ByRef weOpened As Boolean) As Workbook
     Dim wb As Workbook
     Dim fso As Object
     Dim normalized As String
-    Dim saveErrNum As Long
-    Dim saveErrDesc As String
+    Dim openErr As Long
+    Dim openDesc As String
 
     createdNew = False
     weOpened = False
     normalized = NormalizePath(path)
     Set fso = CreateObject("Scripting.FileSystemObject")
+    Set wb = Nothing
 
-    ' 1) Уже открыт в Excel - используем его (не открываем второй раз)
     Set wb = FindOpenWorkbookByPath(normalized)
     If Not wb Is Nothing Then
-        Set OpenOrCreateArchive = wb
+        Set OpenArchiveAppendOnly = wb
         Exit Function
     End If
 
-    ' 2) Файл на диске есть - только Open, без SaveAs
-    If ArchiveFileExists(normalized, fso) Then
-        Set wb = Workbooks.Open(Filename:=normalized, UpdateLinks:=0, ReadOnly:=False, IgnoreReadOnlyRecommended:=True)
+    ' Главный путь: пытаемся ОТКРЫТЬ. Если файл есть - он откроется.
+    On Error Resume Next
+    Set wb = Workbooks.Open(Filename:=normalized, _
+                            UpdateLinks:=0, _
+                            ReadOnly:=False, _
+                            IgnoreReadOnlyRecommended:=True)
+    openErr = Err.Number
+    openDesc = Err.Description
+    On Error GoTo 0
+
+    If Not wb Is Nothing Then
         weOpened = True
-        Set OpenOrCreateArchive = wb
+        createdNew = False
+        Set OpenArchiveAppendOnly = wb
         Exit Function
     End If
 
-    ' 3) Файла нет - создаём новый и сохраняем по фиксированному пути
+    ' Файл есть на диске, но Open не удался - НЕ создаём новый и НЕ SaveAs
+    If FileExistsOnDisk(normalized, fso) Then
+        Err.Raise vbObjectError + 10, "OpenArchiveAppendOnly", _
+                  "Архив существует, но не удалось открыть:" & vbCrLf & normalized & vbCrLf & _
+                  openDesc & vbCrLf & _
+                  "Закройте файл если он занят другим процессом. Перезапись запрещена."
+    End If
+
+    ' Файла точно нет - создаём новый
     EnsureParentFolder normalized, fso
+
+    If FileExistsOnDisk(normalized, fso) Then
+        Err.Raise vbObjectError + 11, "OpenArchiveAppendOnly", _
+                  "Архив появился на диске. Перезапись запрещена. Откройте его вручную:" & vbCrLf & normalized
+    End If
+
     Set wb = Workbooks.Add(xlWBATWorksheet)
-    Application.DisplayAlerts = False
-    On Error GoTo SaveAsFail
+    On Error GoTo SaveFail
     wb.SaveAs Filename:=normalized, FileFormat:=xlOpenXMLWorkbook
     On Error GoTo 0
-    Application.DisplayAlerts = True
+
     createdNew = True
     weOpened = True
-    Set OpenOrCreateArchive = wb
+    Set OpenArchiveAppendOnly = wb
     Exit Function
 
-SaveAsFail:
-    saveErrNum = Err.Number
-    saveErrDesc = Err.Description
-    Application.DisplayAlerts = True
-    ' Если между проверкой и SaveAs файл появился - открываем его, не затираем
+SaveFail:
+    openErr = Err.Number
+    openDesc = Err.Description
     On Error Resume Next
     wb.Close SaveChanges:=False
     On Error GoTo 0
-    If ArchiveFileExists(normalized, fso) Then
-        Set wb = Workbooks.Open(Filename:=normalized, UpdateLinks:=0, ReadOnly:=False)
-        weOpened = True
-        createdNew = False
-        Set OpenOrCreateArchive = wb
-        Exit Function
-    End If
-    Err.Raise saveErrNum, "OpenOrCreateArchive", _
-              "Не удалось создать архив: " & normalized & " (" & saveErrDesc & ")"
+    Err.Raise openErr, "OpenArchiveAppendOnly", _
+              "Не удалось создать архив (без перезаписи): " & normalized & vbCrLf & openDesc
 End Function
 
 Private Function FindOpenWorkbookByPath(ByVal path As String) As Workbook
     Dim wb As Workbook
     Dim fullName As String
     Dim target As String
+    Dim targetName As String
 
     target = UCase$(NormalizePath(path))
+    targetName = UCase$(FileNameOnly(path))
+
     For Each wb In Application.Workbooks
+        fullName = vbNullString
         On Error Resume Next
         fullName = wb.FullName
         On Error GoTo 0
@@ -250,16 +282,25 @@ Private Function FindOpenWorkbookByPath(ByVal path As String) As Workbook
                 Set FindOpenWorkbookByPath = wb
                 Exit Function
             End If
+            ' Запасной критерий: то же имя файла в той же папке AUTO\iRipper
+            If UCase$(FileNameOnly(fullName)) = targetName Then
+                If InStr(1, UCase$(NormalizePath(fullName)), "\AUTO\IRIPPER\", vbBinaryCompare) > 0 Then
+                    Set FindOpenWorkbookByPath = wb
+                    Exit Function
+                End If
+            End If
         End If
     Next wb
     Set FindOpenWorkbookByPath = Nothing
 End Function
 
-Private Function ArchiveFileExists(ByVal path As String, ByVal fso As Object) As Boolean
+Private Function FileExistsOnDisk(ByVal path As String, ByVal fso As Object) As Boolean
+    Dim d As String
     On Error Resume Next
-    ArchiveFileExists = fso.FileExists(path)
-    If Not ArchiveFileExists Then
-        ArchiveFileExists = (Len(Dir$(path)) > 0)
+    FileExistsOnDisk = fso.FileExists(path)
+    If Not FileExistsOnDisk Then
+        d = Dir$(path)
+        FileExistsOnDisk = (Len(d) > 0)
     End If
     On Error GoTo 0
 End Function
@@ -268,13 +309,24 @@ Private Function NormalizePath(ByVal path As String) As String
     NormalizePath = Replace(Trim$(path), "/", "\")
 End Function
 
+Private Function FileNameOnly(ByVal path As String) As String
+    Dim p As String
+    Dim pos As Long
+    p = NormalizePath(path)
+    pos = InStrRev(p, "\")
+    If pos > 0 Then
+        FileNameOnly = Mid$(p, pos + 1)
+    Else
+        FileNameOnly = p
+    End If
+End Function
+
 Private Sub EnsureParentFolder(ByVal path As String, ByVal fso As Object)
     Dim folder As String
     folder = fso.GetParentFolderName(path)
-    If Len(folder) > 0 Then
-        If Not fso.FolderExists(folder) Then
-            fso.CreateFolder folder
-        End If
+    If Len(folder) = 0 Then Exit Sub
+    If Not fso.FolderExists(folder) Then
+        fso.CreateFolder folder
     End If
 End Sub
 
@@ -282,8 +334,7 @@ Private Function EnsureDestSheet(wb As Workbook, ByVal sheetName As String) As W
     Dim ws As Worksheet
     Set ws = FindSheetByName(wb, sheetName)
     If ws Is Nothing Then
-        ' Для новой книги переименуем единственный лист, чтобы не плодить пустые
-        If wb.Worksheets.Count = 1 And LastDataRow(wb.Worksheets(1)) < 1 Then
+        If wb.Worksheets.Count = 1 And LastNonEmptyRow(wb.Worksheets(1), 1, DEST_COL_COUNT) < 1 Then
             Set ws = wb.Worksheets(1)
             On Error Resume Next
             ws.Name = sheetName
@@ -298,15 +349,81 @@ Private Function EnsureDestSheet(wb As Workbook, ByVal sheetName As String) As W
     Set EnsureDestSheet = ws
 End Function
 
-' Последняя строка с данными; 0 = лист пустой (шапки нет)
-Private Function LastDataRow(ws As Worksheet) As Long
+Private Function FindSheetByName(wb As Workbook, sheetName As String) As Worksheet
+    Dim ws As Worksheet
+    For Each ws In wb.Worksheets
+        If StrComp(Trim$(ws.Name), Trim$(sheetName), vbTextCompare) = 0 Then
+            Set FindSheetByName = ws
+            Exit Function
+        End If
+    Next ws
+    Set FindSheetByName = Nothing
+End Function
+
+' ======================== Строки / значения ========================
+
+Private Function LastNonEmptyRow(ws As Worksheet, ByVal colFrom As Long, ByVal colTo As Long) As Long
+    Dim rng As Range
+    Dim area As Range
     Dim lastRow As Long
-    lastRow = LastUsedRowInColumns(ws, 1, DEST_COL_COUNT)
-    If lastRow <= 1 And IsBlankCell(ws.Cells(1, 1).Value2) And IsBlankCell(ws.Cells(1, DEST_BATCH_COL).Value2) Then
-        LastDataRow = 0
-    Else
-        LastDataRow = lastRow
+    Dim c As Long
+    Dim found As Long
+
+    lastRow = 0
+
+    On Error Resume Next
+    Set rng = ws.Range(ws.Cells(1, colFrom), ws.Cells(ws.Rows.Count, colTo)).Find( _
+                What:="*", _
+                LookIn:=xlFormulas, _
+                LookAt:=xlPart, _
+                SearchOrder:=xlByRows, _
+                SearchDirection:=xlPrevious, _
+                MatchCase:=False)
+    On Error GoTo 0
+
+    If Not rng Is Nothing Then
+        lastRow = rng.Row
     End If
+
+    ' Дополнительно по каждой колонке (надёжнее после фильтров / UsedRange)
+    For c = colFrom To colTo
+        found = ws.Cells(ws.Rows.Count, c).End(xlUp).Row
+        If Not IsBlankCell(ws.Cells(found, c).Value2) Then
+            If found > lastRow Then lastRow = found
+        End If
+    Next c
+
+    ' UsedRange как третий сигнал
+    On Error Resume Next
+    Set area = ws.UsedRange
+    On Error GoTo 0
+    If Not area Is Nothing Then
+        found = area.Row + area.Rows.Count - 1
+        If found > lastRow Then
+            ' UsedRange иногда раздут - принимаем только если в этой строке есть значение в наших колонках
+            For c = colFrom To colTo
+                If Not IsBlankCell(ws.Cells(found, c).Value2) Then
+                    lastRow = found
+                    Exit For
+                End If
+            Next c
+        End If
+    End If
+
+    LastNonEmptyRow = lastRow
+End Function
+
+Private Function NextEmptyArchiveRow(ws As Worksheet, ByVal afterRow As Long) As Long
+    Dim r As Long
+    r = afterRow + 1
+    If r < 2 Then r = 2
+    Do While Not IsBlankCell(ws.Cells(r, 1).Value2) Or Not IsBlankCell(ws.Cells(r, DEST_BATCH_COL).Value2)
+        r = r + 1
+        If r >= ws.Rows.Count Then
+            Err.Raise vbObjectError + 12, "NextEmptyArchiveRow", "Нет свободных строк в архиве."
+        End If
+    Loop
+    NextEmptyArchiveRow = r
 End Function
 
 Private Sub CopyHeaderAsValues(srcWs As Worksheet, destWs As Worksheet)
@@ -320,7 +437,7 @@ Private Function BuildBatchIdMap(ws As Worksheet, ByVal lastRow As Long) As Obje
     Dim key As String
 
     Set dict = CreateObject("Scripting.Dictionary")
-    dict.CompareMode = 1 ' TextCompare
+    dict.CompareMode = 1
 
     If lastRow >= 2 Then
         For r = 2 To lastRow
@@ -332,19 +449,6 @@ Private Function BuildBatchIdMap(ws As Worksheet, ByVal lastRow As Long) As Obje
     End If
 
     Set BuildBatchIdMap = dict
-End Function
-
-Private Function LastUsedRowInColumns(ws As Worksheet, ByVal colFrom As Long, ByVal colTo As Long) As Long
-    Dim c As Long
-    Dim lastRow As Long
-    Dim found As Long
-
-    lastRow = 1
-    For c = colFrom To colTo
-        found = ws.Cells(ws.Rows.Count, c).End(xlUp).Row
-        If found > lastRow Then lastRow = found
-    Next c
-    LastUsedRowInColumns = lastRow
 End Function
 
 Private Function IsBlankCell(ByVal v As Variant) As Boolean
@@ -363,7 +467,6 @@ Private Function NormalizeBatchId(ByVal v As Variant) As String
     If IsBlankCell(v) Then
         NormalizeBatchId = ""
     ElseIf IsNumeric(v) Then
-        ' Числа без экспоненты / хвоста .0
         If Fix(CDbl(v)) = CDbl(v) Then
             NormalizeBatchId = CStr(CLng(v))
         Else
