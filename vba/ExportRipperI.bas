@@ -19,10 +19,10 @@ Private Const SOURCE_SHEET_NAME As String = "Ripper I"
 Private Const DEST_SHEET_NAME As String = "Ripper I"
 
 ' Диапазон F:M
-Private Const COL_FIRST As Long = 6   ' F — Packed batch
-Private Const COL_LAST As Long = 13   ' M — Ripper weight
-Private Const COL_PACKED As Long = 6  ' F — критерий «есть значение»
-Private Const COL_BATCH As Long = 10  ' J — Batch Id (уникальность)
+Private Const COL_FIRST As Long = 6   ' F - Packed batch
+Private Const COL_LAST As Long = 13   ' M - Ripper weight
+Private Const COL_PACKED As Long = 6  ' F - критерий "есть значение"
+Private Const COL_BATCH As Long = 10  ' J - Batch Id (уникальность)
 
 ' В архиве колонки сдвигаются: F->A ... M->H, Batch Id оказывается в колонке E
 Private Const DEST_BATCH_COL As Long = 5
