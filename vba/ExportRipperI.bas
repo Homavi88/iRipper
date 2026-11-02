@@ -1,13 +1,16 @@
-Attribute VB_Name = "ExportRipperI"
 Option Explicit
 
 ' ============================================================
-' Экспорт уникальных строк F:M с листа "Ripper I" в архив на M:\
-' Привязка только к имени листа — имя файла источника не важно.
+' Экспорт уникальных строк F:M с листа "Ripper I" в архив.
+' Привязка только к имени листа - имя файла источника не важно.
+'
+' ВАЖНО: не оставляйте в модуле строку Attribute VB_Name = ...
+' Она нужна только при File > Import File, при вставке кода
+' даёт Compile error: Expected: line number or label...
 ' ============================================================
 
-' Путь к файлу-архиву на диске M (при необходимости измените имя файла)
-Private Const DEST_PATH As String = "M:\Ripper_I_PackedBatches.xlsx"
+' Путь к файлу-архиву (измените при необходимости)
+Private Const DEST_PATH As String = "C:\AUTO\iRipper\Ripper_I_PackedBatches.xlsx"
 
 ' Имя листа-источника (фиксировано; имя книги может меняться)
 Private Const SOURCE_SHEET_NAME As String = "Ripper I"
@@ -16,10 +19,10 @@ Private Const SOURCE_SHEET_NAME As String = "Ripper I"
 Private Const DEST_SHEET_NAME As String = "Ripper I"
 
 ' Диапазон F:M
-Private Const COL_FIRST As Long = 6   ' F — Packed batch
-Private Const COL_LAST As Long = 13   ' M — Ripper weight
-Private Const COL_PACKED As Long = 6  ' F — критерий «есть значение»
-Private Const COL_BATCH As Long = 10  ' J — Batch Id (уникальность)
+Private Const COL_FIRST As Long = 6   ' F - Packed batch
+Private Const COL_LAST As Long = 13   ' M - Ripper weight
+Private Const COL_PACKED As Long = 6  ' F - критерий "есть значение"
+Private Const COL_BATCH As Long = 10  ' J - Batch Id (уникальность)
 
 ' В архиве колонки сдвигаются: F->A ... M->H, Batch Id оказывается в колонке E
 Private Const DEST_BATCH_COL As Long = 5
