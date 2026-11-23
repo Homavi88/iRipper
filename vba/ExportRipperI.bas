@@ -1,15 +1,16 @@
 Option Explicit
 
 ' ============================================================
-' ExportRipperI - v4
+' ExportRipperI - v5
 ' Экспорт F:M с листа "Ripper I" в ОДИН общий архив.
 ' Имя исходной книги не важно - архив только ДОПИСЫВАЕТСЯ.
 '
-' v4: исправлен Type mismatch (ошибка 13) при разборе Batch Id
-'     и ячеек с формулами/spill.
+' v5: исправлен Type mismatch на шаге find source sheet
+'     (безопасный поиск листа + ThisWorkbook/ActiveWorkbook)
+' v4: Type mismatch при разборе Batch Id / spill
 ' ============================================================
 
-Private Const MACRO_VERSION As String = "v4-append-2026-11-06"
+Private Const MACRO_VERSION As String = "v5-append-2026-11-23"
 
 Private Const DEST_PATH As String = "C:\AUTO\iRipper\Ripper_I_PackedBatches.xlsx"
 
@@ -43,16 +44,17 @@ Public Sub ExportUniquePackedBatches()
     Dim createdNew As Boolean
     Dim weOpenedDest As Boolean
     Dim screenWasUpdating As Boolean
-    Dim calcMode As XlCalculation
+    Dim calcMode As Long
     Dim stepName As String
     Dim errNum As Long
     Dim errDesc As String
+    Dim sheetList As String
 
     On Error GoTo CleanFail
 
     stepName = "init"
     screenWasUpdating = Application.ScreenUpdating
-    calcMode = Application.Calculation
+    calcMode = CLng(Application.Calculation)
     Application.ScreenUpdating = False
     Application.Calculation = xlCalculationManual
     Application.EnableEvents = False
@@ -60,13 +62,29 @@ Public Sub ExportUniquePackedBatches()
     weOpenedDest = False
     createdNew = False
     Set destWb = Nothing
+    Set srcWb = Nothing
+    Set srcWs = Nothing
+
+    stepName = "resolve source workbook"
+    Set srcWb = ResolveSourceWorkbook(SOURCE_SHEET_NAME)
 
     stepName = "find source sheet"
-    Set srcWb = ThisWorkbook
+    If srcWb Is Nothing Then
+        MsgBox "Version: " & MACRO_VERSION & vbCrLf & _
+               "Лист """ & SOURCE_SHEET_NAME & """ не найден" & vbCrLf & _
+               "ни в ThisWorkbook, ни в ActiveWorkbook." & vbCrLf & _
+               "Откройте книгу с листом Ripper I и запустите снова.", _
+               vbExclamation, "Export Ripper I"
+        GoTo CleanExit
+    End If
+
     Set srcWs = FindSheetByName(srcWb, SOURCE_SHEET_NAME)
     If srcWs Is Nothing Then
+        sheetList = ListWorksheetNames(srcWb)
         MsgBox "Version: " & MACRO_VERSION & vbCrLf & _
-               "Лист """ & SOURCE_SHEET_NAME & """ не найден.", _
+               "Лист """ & SOURCE_SHEET_NAME & """ не найден в книге:" & vbCrLf & _
+               srcWb.Name & vbCrLf & vbCrLf & _
+               "Доступные листы:" & vbCrLf & sheetList, _
                vbExclamation, "Export Ripper I"
         GoTo CleanExit
     End If
@@ -165,9 +183,11 @@ CleanExit:
     If weOpenedDest Then
         If Not destWb Is Nothing Then
             If Not srcWb Is Nothing Then
-                If StrComp(destWb.FullName, srcWb.FullName, vbTextCompare) <> 0 Then
+                If StrComp(CStr(destWb.FullName), CStr(srcWb.FullName), vbTextCompare) <> 0 Then
                     destWb.Close SaveChanges:=False
                 End If
+            Else
+                destWb.Close SaveChanges:=False
             End If
         End If
     End If
@@ -184,9 +204,11 @@ CleanFail:
     If weOpenedDest Then
         If Not destWb Is Nothing Then
             If Not srcWb Is Nothing Then
-                If StrComp(destWb.FullName, srcWb.FullName, vbTextCompare) <> 0 Then
+                If StrComp(CStr(destWb.FullName), CStr(srcWb.FullName), vbTextCompare) <> 0 Then
                     destWb.Close SaveChanges:=False
                 End If
+            Else
+                destWb.Close SaveChanges:=False
             End If
         End If
     End If
@@ -198,6 +220,123 @@ CleanFail:
            "Шаг: " & stepName & vbCrLf & _
            "Ошибка VBA " & errNum & ": " & errDesc, vbCritical, "Export Ripper I"
 End Sub
+
+' ======================== Поиск листа (без For Each Worksheet) ========================
+
+' ThisWorkbook, затем ActiveWorkbook - макрос может жить не в той же книге
+Private Function ResolveSourceWorkbook(ByVal sheetName As String) As Workbook
+    Dim wb As Workbook
+    Dim ws As Worksheet
+
+    Set ResolveSourceWorkbook = Nothing
+
+    On Error Resume Next
+    Set wb = ThisWorkbook
+    On Error GoTo 0
+    If Not wb Is Nothing Then
+        Set ws = FindSheetByName(wb, sheetName)
+        If Not ws Is Nothing Then
+            Set ResolveSourceWorkbook = wb
+            Exit Function
+        End If
+    End If
+
+    Set wb = Nothing
+    On Error Resume Next
+    Set wb = Application.ActiveWorkbook
+    On Error GoTo 0
+    If Not wb Is Nothing Then
+        Set ws = FindSheetByName(wb, sheetName)
+        If Not ws Is Nothing Then
+            Set ResolveSourceWorkbook = wb
+            Exit Function
+        End If
+    End If
+
+    ' Последний шанс: любая открытая книга с нужным листом
+    On Error Resume Next
+    For Each wb In Application.Workbooks
+        Set ws = FindSheetByName(wb, sheetName)
+        If Not ws Is Nothing Then
+            Set ResolveSourceWorkbook = wb
+            Exit Function
+        End If
+    Next wb
+    On Error GoTo 0
+End Function
+
+' Прямой доступ по имени + обход по индексу через Object (без typed For Each)
+Private Function FindSheetByName(ByVal wb As Workbook, ByVal sheetName As String) As Worksheet
+    Dim ws As Worksheet
+    Dim sh As Object
+    Dim i As Long
+    Dim target As String
+    Dim nm As String
+
+    Set FindSheetByName = Nothing
+    If wb Is Nothing Then Exit Function
+
+    target = Trim$(sheetName)
+    If Len(target) = 0 Then Exit Function
+
+    ' 1) Прямой доступ - Excel ищет без учёта регистра
+    Set ws = Nothing
+    On Error Resume Next
+    Set ws = wb.Worksheets(target)
+    On Error GoTo 0
+    If Not ws Is Nothing Then
+        Set FindSheetByName = ws
+        Exit Function
+    End If
+
+    ' 2) Обход по индексу без For Each ws As Worksheet (давал Error 13)
+    On Error Resume Next
+    For i = 1 To wb.Worksheets.Count
+        Set sh = Nothing
+        Set sh = wb.Worksheets(i)
+        If Not sh Is Nothing Then
+            nm = vbNullString
+            nm = CStr(sh.Name)
+            If StrComp(Trim$(nm), target, vbTextCompare) = 0 Then
+                Set ws = Nothing
+                Set ws = sh
+                If Not ws Is Nothing Then
+                    Set FindSheetByName = ws
+                    On Error GoTo 0
+                    Exit Function
+                End If
+            End If
+        End If
+    Next i
+    On Error GoTo 0
+End Function
+
+Private Function ListWorksheetNames(ByVal wb As Workbook) As String
+    Dim i As Long
+    Dim sh As Object
+    Dim nm As String
+    Dim acc As String
+
+    acc = ""
+    On Error Resume Next
+    For i = 1 To wb.Worksheets.Count
+        Set sh = Nothing
+        nm = vbNullString
+        Set sh = wb.Worksheets(i)
+        nm = CStr(sh.Name)
+        If Len(nm) > 0 Then
+            If Len(acc) = 0 Then
+                acc = "- " & nm
+            Else
+                acc = acc & vbCrLf & "- " & nm
+            End If
+        End If
+    Next i
+    On Error GoTo 0
+
+    If Len(acc) = 0 Then acc = "(нет листов)"
+    ListWorksheetNames = acc
+End Function
 
 ' ======================== Архив ========================
 
@@ -279,26 +418,28 @@ Private Function FindOpenWorkbookByPath(ByVal path As String) As Workbook
 
     target = UCase$(NormalizePath(path))
     targetName = UCase$(FileNameOnly(path))
+    Set FindOpenWorkbookByPath = Nothing
 
+    On Error Resume Next
     For Each wb In Application.Workbooks
         fullName = vbNullString
-        On Error Resume Next
         fullName = wb.FullName
-        On Error GoTo 0
         If Len(fullName) > 0 Then
             If UCase$(NormalizePath(fullName)) = target Then
                 Set FindOpenWorkbookByPath = wb
+                On Error GoTo 0
                 Exit Function
             End If
             If UCase$(FileNameOnly(fullName)) = targetName Then
                 If InStr(1, UCase$(NormalizePath(fullName)), "\AUTO\IRIPPER\", vbBinaryCompare) > 0 Then
                     Set FindOpenWorkbookByPath = wb
+                    On Error GoTo 0
                     Exit Function
                 End If
             End If
         End If
     Next wb
-    Set FindOpenWorkbookByPath = Nothing
+    On Error GoTo 0
 End Function
 
 Private Function FileExistsOnDisk(ByVal path As String, ByVal fso As Object) As Boolean
@@ -337,16 +478,27 @@ Private Sub EnsureParentFolder(ByVal path As String, ByVal fso As Object)
     End If
 End Sub
 
-Private Function EnsureDestSheet(wb As Workbook, ByVal sheetName As String) As Worksheet
+Private Function EnsureDestSheet(ByVal wb As Workbook, ByVal sheetName As String) As Worksheet
     Dim ws As Worksheet
+    Dim firstWs As Worksheet
+
     Set ws = FindSheetByName(wb, sheetName)
     If ws Is Nothing Then
-        If wb.Worksheets.Count = 1 And LastNonEmptyRow(wb.Worksheets(1), 1, DEST_COL_COUNT) < 1 Then
-            Set ws = wb.Worksheets(1)
-            On Error Resume Next
-            ws.Name = sheetName
-            On Error GoTo 0
-        Else
+        Set firstWs = Nothing
+        On Error Resume Next
+        Set firstWs = wb.Worksheets(1)
+        On Error GoTo 0
+
+        If Not firstWs Is Nothing Then
+            If wb.Worksheets.Count = 1 And LastNonEmptyRow(firstWs, 1, DEST_COL_COUNT) < 1 Then
+                On Error Resume Next
+                firstWs.Name = sheetName
+                On Error GoTo 0
+                Set ws = FindSheetByName(wb, sheetName)
+            End If
+        End If
+
+        If ws Is Nothing Then
             Set ws = wb.Worksheets.Add(After:=wb.Worksheets(wb.Worksheets.Count))
             On Error Resume Next
             ws.Name = sheetName
@@ -356,20 +508,9 @@ Private Function EnsureDestSheet(wb As Workbook, ByVal sheetName As String) As W
     Set EnsureDestSheet = ws
 End Function
 
-Private Function FindSheetByName(wb As Workbook, sheetName As String) As Worksheet
-    Dim ws As Worksheet
-    For Each ws In wb.Worksheets
-        If StrComp(Trim$(ws.Name), Trim$(sheetName), vbTextCompare) = 0 Then
-            Set FindSheetByName = ws
-            Exit Function
-        End If
-    Next ws
-    Set FindSheetByName = Nothing
-End Function
-
 ' ======================== Строки / значения ========================
 
-Private Function LastNonEmptyRow(ws As Worksheet, ByVal colFrom As Long, ByVal colTo As Long) As Long
+Private Function LastNonEmptyRow(ByVal ws As Worksheet, ByVal colFrom As Long, ByVal colTo As Long) As Long
     Dim rng As Range
     Dim area As Range
     Dim lastRow As Long
@@ -377,6 +518,10 @@ Private Function LastNonEmptyRow(ws As Worksheet, ByVal colFrom As Long, ByVal c
     Dim found As Long
 
     lastRow = 0
+    If ws Is Nothing Then
+        LastNonEmptyRow = 0
+        Exit Function
+    End If
 
     On Error Resume Next
     Set rng = ws.Range(ws.Cells(1, colFrom), ws.Cells(ws.Rows.Count, colTo)).Find( _
@@ -415,7 +560,7 @@ Private Function LastNonEmptyRow(ws As Worksheet, ByVal colFrom As Long, ByVal c
     LastNonEmptyRow = lastRow
 End Function
 
-Private Function NextEmptyArchiveRow(ws As Worksheet, ByVal afterRow As Long) As Long
+Private Function NextEmptyArchiveRow(ByVal ws As Worksheet, ByVal afterRow As Long) As Long
     Dim r As Long
     r = afterRow + 1
     If r < 2 Then r = 2
@@ -429,13 +574,12 @@ Private Function NextEmptyArchiveRow(ws As Worksheet, ByVal afterRow As Long) As
     NextEmptyArchiveRow = r
 End Function
 
-Private Sub CopyHeaderAsValues(srcWs As Worksheet, destWs As Worksheet)
+Private Sub CopyHeaderAsValues(ByVal srcWs As Worksheet, ByVal destWs As Worksheet)
     CopyRowAsValues srcWs, 1, destWs, 1
 End Sub
 
-' Копируем ячейки по одной как значения - устойчиво к spill/ошибкам формул
-Private Sub CopyRowAsValues(srcWs As Worksheet, ByVal srcRow As Long, _
-                            destWs As Worksheet, ByVal destRow As Long)
+Private Sub CopyRowAsValues(ByVal srcWs As Worksheet, ByVal srcRow As Long, _
+                            ByVal destWs As Worksheet, ByVal destRow As Long)
     Dim c As Long
     Dim v As Variant
     For c = 0 To DEST_COL_COUNT - 1
@@ -443,12 +587,18 @@ Private Sub CopyRowAsValues(srcWs As Worksheet, ByVal srcRow As Long, _
         If IsError(v) Then
             destWs.Cells(destRow, 1 + c).Value2 = Empty
         Else
+            On Error Resume Next
             destWs.Cells(destRow, 1 + c).Value2 = v
+            If Err.Number <> 0 Then
+                Err.Clear
+                destWs.Cells(destRow, 1 + c).Value = CStr(v & "")
+            End If
+            On Error GoTo 0
         End If
     Next c
 End Sub
 
-Private Function BuildBatchIdMap(ws As Worksheet, ByVal lastRow As Long) As Object
+Private Function BuildBatchIdMap(ByVal ws As Worksheet, ByVal lastRow As Long) As Object
     Dim dict As Object
     Dim r As Long
     Dim key As String
@@ -468,7 +618,6 @@ Private Function BuildBatchIdMap(ws As Worksheet, ByVal lastRow As Long) As Obje
     Set BuildBatchIdMap = dict
 End Function
 
-' Value2 может вернуть массив (spill) - всегда берём скаляр
 Private Function CellValueScalar(ByVal cell As Range) As Variant
     Dim v As Variant
     On Error GoTo FailSafe
@@ -510,7 +659,6 @@ SafeBlank:
     IsBlankCell = True
 End Function
 
-' Без CLng/CDbl - они давали Type mismatch (13) на части значений из Excel
 Private Function NormalizeBatchId(ByVal v As Variant) As String
     Dim s As String
     Dim t As Integer
@@ -531,7 +679,6 @@ Private Function NormalizeBatchId(ByVal v As Variant) As String
         Case vbByte, vbInteger, vbLong
             s = CStr(v)
         Case vbSingle, vbDouble, vbCurrency, vbDecimal
-            ' Format$ безопаснее CLng для целых Double из Excel
             On Error Resume Next
             If Abs(CDbl(v) - Fix(CDbl(v))) < 0.000000001 Then
                 s = Format$(v, "0")
